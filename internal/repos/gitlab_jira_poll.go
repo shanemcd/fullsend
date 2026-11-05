@@ -36,7 +36,16 @@ func (gitlabJiraPollReconciler) Ensure(ctx context.Context, req jiraPollRequest)
 	client, owner, repo := req.Client, req.Owner, req.Repo
 	spec := jiraPollScheduleSpec
 
-	if reason, err := gitlabJiraPollDeferral(ctx, client, owner, repo); err != nil {
+	repoInfo, err := client.GetRepo(ctx, owner, repo)
+	if err != nil {
+		return nil, safeAPIError("reading the default branch for the Jira poll schedule", err)
+	}
+	defaultBranch := repoInfo.DefaultBranch
+	if defaultBranch == "" {
+		defaultBranch = "main"
+	}
+
+	if reason, err := gitlabJiraPollDeferral(ctx, client, owner, repo, defaultBranch); err != nil {
 		return nil, err
 	} else if reason != "" {
 		return []ComponentAction{{Component: jiraPollComponent, Action: "none", Detail: reason}}, nil
@@ -45,14 +54,6 @@ func (gitlabJiraPollReconciler) Ensure(ctx context.Context, req jiraPollRequest)
 	existing, err := listJiraPollSchedules(ctx, client, owner, repo)
 	if err != nil {
 		return nil, err
-	}
-	repoInfo, err := client.GetRepo(ctx, owner, repo)
-	if err != nil {
-		return nil, safeAPIError("reading the default branch for the Jira poll schedule", err)
-	}
-	defaultBranch := repoInfo.DefaultBranch
-	if defaultBranch == "" {
-		defaultBranch = "main"
 	}
 
 	var keep *forge.PipelineSchedule
@@ -201,10 +202,13 @@ func jiraPollScheduleInSync(ctx context.Context, client forge.Client, owner, rep
 // must select the Jira poll mode from the schedule identity and the
 // committed job script must run the Jira poller; until a scaffold update
 // carrying both is merged, a Jira schedule would start a pipeline with no
-// Jira poll job. Like the managed polling schedules (convergeSchedules), a
-// credential-bearing schedule also waits for the pipeline-variable override
-// restriction.
-func gitlabJiraPollDeferral(ctx context.Context, client forge.Client, owner, repo string) (string, error) {
+// Jira poll job. The committed root workflow and include rules, the wrapper
+// include rules, the poll stage, and the poll job's own rules must also admit
+// a pipeline carrying the Jira schedule description, the same chain verified
+// for the managed polling schedules. Like those schedules
+// (convergeSchedules), a credential-bearing schedule also waits for the
+// pipeline-variable override restriction.
+func gitlabJiraPollDeferral(ctx context.Context, client forge.Client, owner, repo, defaultBranch string) (string, error) {
 	const pending = "deferring the Jira poll schedule until the poll template and job script that run the Jira poller land on the default branch; merge the scaffold update and rerun repos install"
 	template, err := client.GetFileContent(ctx, owner, repo, fullsendPollTemplatePath)
 	if forge.IsNotFound(err) {
@@ -225,6 +229,9 @@ func gitlabJiraPollDeferral(ctx context.Context, client forge.Client, owner, rep
 	}
 	if !bytes.Contains(script, []byte("--input-driver jira-poll")) {
 		return pending, nil
+	}
+	if problem := gitlabScheduledPollProblemFor(ctx, client, owner, repo, defaultBranch, []string{jiraPollScheduleSpec.Description}); problem != "" {
+		return "deferring the Jira poll schedule: " + problem, nil
 	}
 	role, err := client.GetPipelineVariablesMinimumOverrideRole(ctx, owner, repo)
 	if err != nil {

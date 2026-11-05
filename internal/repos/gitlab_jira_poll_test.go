@@ -3,6 +3,7 @@ package repos
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -26,7 +27,7 @@ func jiraReadyGitLabProject(t *testing.T, schedules ...forge.PipelineSchedule) *
 	t.Helper()
 	fc := forge.NewFakeClient()
 	fc.Repos = append(fc.Repos, forge.Repository{Name: jiraGLRepo, FullName: jiraGLKey, DefaultBranch: "main"})
-	for _, path := range []string{fullsendPollTemplatePath, gitlabPollJobScriptPath} {
+	for _, path := range []string{".gitlab-ci.yml", fullsendPipelineInclude, fullsendPollTemplatePath, gitlabPollJobScriptPath} {
 		content, err := scaffold.GitLabPerRepoFile(path)
 		require.NoError(t, err)
 		fc.FileContents[jiraGLKey+"/"+path] = content
@@ -243,6 +244,17 @@ func TestGitLabJiraPoll_EnsureDryRunWritesNothing(t *testing.T) {
 	}
 }
 
+// restrictScheduleRuleToEventPoll narrows the committed schedule admission
+// rule rule in path so it admits only the event poll schedule, as a repo
+// whose CI configuration predates the Jira schedule would.
+func restrictScheduleRuleToEventPoll(t *testing.T, fc *forge.FakeClient, path, rule string) {
+	t.Helper()
+	key := jiraGLKey + "/" + path
+	content := string(fc.FileContents[key])
+	require.Contains(t, content, rule)
+	fc.FileContents[key] = []byte(strings.Replace(content, rule, rule+` && $CI_PIPELINE_SCHEDULE_DESCRIPTION == "fullsend event poll"`, 1))
+}
+
 func TestGitLabJiraPoll_EnsureDefersUntilReady(t *testing.T) {
 	for name, tc := range map[string]struct {
 		mutate     func(*forge.FakeClient)
@@ -267,6 +279,20 @@ func TestGitLabJiraPoll_EnsureDefersUntilReady(t *testing.T) {
 				fc.FileContents[jiraGLKey+"/"+gitlabPollJobScriptPath] = []byte("fullsend poll --forge gitlab\n")
 			},
 			wantDetail: "until the poll template and job script",
+		},
+		"root workflow excludes the Jira schedule": {
+			mutate: func(fc *forge.FakeClient) {
+				restrictScheduleRuleToEventPoll(t, fc, ".gitlab-ci.yml",
+					`- if: $CI_PIPELINE_SOURCE == "schedule" && $CI_COMMIT_REF_PROTECTED == "true"`)
+			},
+			wantDetail: "the committed workflow does not admit fullsend jira poll",
+		},
+		"wrapper include excludes the Jira schedule": {
+			mutate: func(fc *forge.FakeClient) {
+				restrictScheduleRuleToEventPoll(t, fc, fullsendPipelineInclude,
+					`- if: $CI_PIPELINE_SOURCE == "schedule" && $CI_DEBUG_TRACE !~ /^(1|t|true)$/i`)
+			},
+			wantDetail: "does not include " + fullsendPollTemplatePath + " for fullsend jira poll",
 		},
 		"restriction not established": {
 			mutate: func(fc *forge.FakeClient) {
