@@ -490,11 +490,19 @@ for issues and merge requests.
   masked CI/CD variables. The agent jobs need them to post run status and the
   triage and code results to the Jira issue.
 
-`repos install` converges the `FULLSEND_JIRA_TOKEN` and `FULLSEND_JIRA_EMAIL`
-variables from `--jira-token` and `--jira-email` for projects whose effective
-`tracker.jira.poll.enabled` is `true`. `fullsend` does not yet create the
-schedule or the `JIRA_*` variables above for you.
-That setup is tracked in
+For projects whose effective `tracker.jira.poll.enabled` is `true`,
+`repos install` writes the `FULLSEND_JIRA_TOKEN` and `FULLSEND_JIRA_EMAIL`
+variables from `--jira-token` and `--jira-email`. It also creates the
+`fullsend jira poll` pipeline schedule. The scaffolded poll job runs the
+command below for that schedule, so you do not need to write your own job. The
+schedule is created only after the scaffold that contains the Jira poll job is
+on the default branch, so after a first install or upgrade, merge the
+scaffold MR and run `repos install` again. Setting `poll.enabled: false`, or
+omitting it, removes the schedule. See
+[Jira polling](../../cli/repos.md#jira-polling).
+
+`fullsend` does not yet create the `JIRA_*` variables above for you. That
+setup is tracked in
 [#8906](https://github.com/fullsend-ai/fullsend/issues/8906).
 
 ### Running the poller
