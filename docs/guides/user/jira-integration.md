@@ -30,7 +30,7 @@ Connect fullsend to a Jira project so that Jira issue activity — comments, lab
 3. **Install fullsend** in the GitHub repository that will run the agents (`fullsend github setup`). See [Configuring GitHub](../getting-started/configuring-github.md) and [Prerequisites](#prerequisites).
 4. **Copy the Jira poller workflow** into `.github/workflows/fullsend-poll-jira.yml`. See [Scheduled workflow](#scheduled-workflow).
 
-   For a GitLab project, steps 3 and 4 differ: install fullsend in the project with `fullsend repos install` and run the poller from a scheduled GitLab CI job with `--target-forge gitlab`. See [GitLab runtime](#gitlab-runtime).
+   For a GitLab project, steps 3 and 4 differ: install fullsend in the project with `fullsend repos install`. When `tracker.jira.poll.enabled` is true, `repos install` provisions the `fullsend jira poll` schedule, and the managed poll job runs the poller with `--target-forge gitlab`. See [GitLab runtime](#gitlab-runtime).
 5. **Configure the Jira site and project** under `tracker.jira` in
    `.fullsend/config.yaml`: set `base_url`, `project`, and
    `poll.enabled: true`, plus `poll.query` if you want a narrower candidate
@@ -462,8 +462,10 @@ slash commands and label events.
 
 ## GitLab runtime
 
-Jira work items can also dispatch agents in a GitLab project. Run the poller
-with `--target-forge gitlab` from a CI job in that project. The poller does
+Jira work items can also dispatch agents in a GitLab project. When
+`tracker.jira.poll.enabled` is true, `repos install` provisions the
+`fullsend jira poll` schedule, and the managed poll job runs the poller with
+`--target-forge gitlab`. The poller does
 not write a matrix for a downstream step. It starts each matched agent
 directly, through the same protected pipeline route the GitLab poller uses
 for issues and merge requests.
