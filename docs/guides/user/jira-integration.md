@@ -28,7 +28,7 @@ Connect fullsend to a Jira project so that Jira issue activity — comments, lab
    `labels: jira_editors`) authorizes them by Edit Issues instead. See
    [Actor role resolution](#actor-role-resolution).
 3. **Install fullsend** in the GitHub repository that will run the agents (`fullsend github setup`). See [Configuring GitHub](../getting-started/configuring-github.md) and [Prerequisites](#prerequisites).
-4. **Copy the Jira poller workflow** into `.github/workflows/fullsend-poll-jira.yml`. See [Scheduled workflow](#scheduled-workflow).
+4. **Install the Jira poller workflow** with `fullsend repos install --jira-token`, once `tracker.jira.poll.enabled` is `true`. Install writes `.github/workflows/fullsend-poll-jira.yml` for you. See [Scheduled workflow](#scheduled-workflow).
 
    For a GitLab project, steps 3 and 4 differ: install fullsend in the project with `fullsend repos install` and run the poller from a scheduled GitLab CI job with `--target-forge gitlab`. See [GitLab runtime](#gitlab-runtime).
 5. **Configure the Jira site and project** under `tracker.jira` in
@@ -324,109 +324,57 @@ agent that should handle Jira events (see step 6 and
 
 ## Scheduled workflow
 
-1. Create `.github/workflows/fullsend-poll-jira.yml` with the following content:
+`fullsend repos install` manages the scheduled Jira poll workflow for you.
 
-```yaml
-name: fullsend Jira poll
+1. Set `tracker.jira.base_url`, `tracker.jira.project`, and
+   `tracker.jira.poll.enabled: true` in the repository's configuration (its
+   `config:` block in `repos.yaml`, or a `config_base` preset; see
+   [Custom JQL](#custom-jql)).
+2. Run `fullsend repos install --jira-token "$FULLSEND_JIRA_TOKEN"`, adding
+   `--jira-email` for a bot user's token. The token is required only on the
+   first Jira-enabled install. Later installs keep the existing secrets unless
+   you supply new values. See
+   [Jira polling](../../cli/repos.md#jira-polling).
 
-on:
-  schedule:
-    - cron: "*/5 * * * *"  # every 5 minutes
-  workflow_dispatch: {}     # allow manual runs
+Install writes `.github/workflows/fullsend-poll-jira.yml` in the same scaffold
+commit or pull request as the rest of the installation. The workflow:
 
-permissions:
-  actions: write
-  contents: write
-  id-token: write
-  issues: write
-  packages: read
-  pull-requests: write
+- runs every five minutes and on manual dispatch (`workflow_dispatch`);
+- calls Fullsend's shared `reusable-poll-jira.yml`, which runs
+  `fullsend poll --input-driver jira-poll` against the repository's
+  `.fullsend/config.yaml` and returns the dispatch matrix;
+- hands that matrix to `reusable-dispatch.yml`, which runs the agents;
+- passes `FULLSEND_JIRA_TOKEN` to the poll job, and `FULLSEND_JIRA_EMAIL` only
+  when that secret exists. The agent jobs never receive either secret. They
+  get `JIRA_TOKEN` and `JIRA_USER_EMAIL` for their own Jira writes.
 
-jobs:
-  poll:
-    runs-on: ubuntu-24.04
-    concurrency:
-      group: fullsend-jira-poll
-      cancel-in-progress: false
-    outputs:
-      matrix: ${{ steps.build-matrix.outputs.matrix }}
-    steps:
-      - uses: actions/checkout@v4
+The workflow has no Jira URL, project, or query inputs. The poller reads them
+from the configuration. Both reusable workflows are pinned to the scaffold's
+`fullsend_ref`, so that ref must be a Fullsend release that ships
+`reusable-poll-jira.yml`. When install manages the caller, it checks that the
+selected ref includes the reusable workflow before writing credentials or
+workflow files. If the ref is too old, install fails for that repo; upgrade
+`fullsend_ref` and run install again.
 
-      - name: Install fullsend
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          gh release download --repo fullsend-ai/fullsend -p 'fullsend_*_linux_amd64.tar.gz' -O - | tar xz
-          sudo mv fullsend /usr/local/bin/
+Install keeps the workflow current. When `poll.enabled` is `false` or
+omitted, it removes the workflow. `repos uninstall` removes it too. Install
+changes the file only when it carries the `# fullsend-component: jira-poll`
+marker line that Fullsend writes. If you copied the poll workflow from an
+earlier version of this guide, it has no marker: install reports it and
+leaves it untouched. Delete that file and re-run `repos install` to switch to
+the managed workflow.
 
-      - name: Poll Jira
-        env:
-          FULLSEND_JIRA_TOKEN: ${{ secrets.FULLSEND_JIRA_TOKEN }}
-          FULLSEND_JIRA_EMAIL: ${{ secrets.FULLSEND_JIRA_EMAIL }}
-          TARGET_REPO: ${{ github.repository }}
-        run: |
-          fullsend poll \
-            --input-driver jira-poll \
-            --target-repo "${TARGET_REPO}" \
-            --output dispatches.json \
-            --fullsend-dir .fullsend
-
-      - name: Build dispatch matrix
-        id: build-matrix
-        run: |
-          set -euo pipefail
-          if ! jq -e 'length > 0' dispatches.json > /dev/null 2>&1; then
-            echo "No dispatches."
-            echo 'matrix={"include":[]}' >> "${GITHUB_OUTPUT}"
-            exit 0
-          fi
-          MATRIX=$(jq -c '{include: .}' dispatches.json)
-          DELIM="MATRIX_$(openssl rand -hex 8)"
-          {
-            echo "matrix<<${DELIM}"
-            printf '%s' "${MATRIX}"
-            echo
-            echo "${DELIM}"
-          } >> "${GITHUB_OUTPUT}"
-
-  harness:
-    name: Harness
-    needs: poll
-    uses: fullsend-ai/fullsend/.github/workflows/reusable-dispatch.yml@main
-    with:
-      matrix: ${{ needs.poll.outputs.matrix }}
-      mint_url: ${{ vars.FULLSEND_MINT_URL }}
-      gcp_region: ${{ vars.FULLSEND_GCP_REGION }}
-      jira_base_url: ${{ vars.JIRA_BASE_URL }}
-    secrets:
-      FULLSEND_GCP_WIF_PROVIDER: ${{ secrets.FULLSEND_GCP_WIF_PROVIDER }}
-      FULLSEND_GCP_PROJECT_ID: ${{ secrets.FULLSEND_GCP_PROJECT_ID }}
-      OTEL_EXPORTER_OTLP_TRACES_HEADERS: ${{ secrets.OTEL_EXPORTER_OTLP_TRACES_HEADERS }}
-      OTEL_EXPORTER_OTLP_HEADERS: ${{ secrets.OTEL_EXPORTER_OTLP_HEADERS }}
-      FULLSEND_JIRA_TOKEN: ${{ secrets.FULLSEND_JIRA_TOKEN }}
-      FULLSEND_JIRA_EMAIL: ${{ secrets.FULLSEND_JIRA_EMAIL }}
-      JIRA_TOKEN: ${{ secrets.JIRA_TOKEN }}
-      JIRA_USER_EMAIL: ${{ secrets.JIRA_USER_EMAIL }}
-```
-
-2. Set `tracker.jira.base_url`, `tracker.jira.project`, and
-   `tracker.jira.poll.enabled: true` in `.fullsend/config.yaml` (see
-   [Custom JQL](#custom-jql)). Unless `poll.enabled` is `true`, the poll step
-   skips the cycle and writes an empty `dispatches.json`.
-3. Commit and push the workflow file.
-
-**How this works:** The `poll` job queries Jira and builds a dispatch matrix in
+**How this works:** The poll job queries Jira and builds a dispatch matrix in
 the format expected by `reusable-dispatch.yml`. When the `matrix` input is
 provided, `reusable-dispatch.yml` skips its routing and dispatch steps and
 goes directly to running harness agents with the pre-computed matrix. Because
-the agent stages still run inside `reusable-dispatch.yml`, dispatch and the
-agents always come from the same fullsend version, and custom pollers can
-reuse fullsend's harness infrastructure. See
+both reusable workflows are pinned to the same ref, the poller, dispatch, and
+the agents always come from the same fullsend version. Custom pollers can
+reuse fullsend's harness infrastructure the same way. See
 [Custom Poller Example](custom-poller-example.md) for more details on this
 pattern.
 
-**`concurrency.cancel-in-progress: false`** ensures overlapping poll cycles queue rather than cancel each other, which is the primary defense against concurrent runs — the GitHub Actions concurrency group means only one poll cycle for this workflow ever runs at a time in the common case. The poller's own Jira entity-property locking is a secondary guard for cases outside that group (e.g. a manually triggered run overlapping a scheduled one): it re-checks for a live lock immediately before writing, narrowing the race to the jitter window between that check and the write, but Jira entity properties have no compare-and-swap, so a lock created in that narrow window can still be clobbered by a genuinely concurrent poller. Treat the GHA concurrency group as the real safety mechanism, not the lock.
+**The poll job's concurrency group (`cancel-in-progress: false`)** makes overlapping poll cycles queue rather than cancel each other. It is the primary defense against concurrent runs: only one poll cycle for this workflow runs at a time in the common case, including manually triggered runs. The poller's own Jira entity-property locking is a secondary guard for cases outside that group: it re-checks for a live lock immediately before writing, narrowing the race to the jitter window between that check and the write, but Jira entity properties have no compare-and-swap, so a lock created in that narrow window can still be clobbered by a genuinely concurrent poller. Treat the GHA concurrency group as the real safety mechanism, not the lock.
 
 ### Custom JQL
 
@@ -868,7 +816,7 @@ Multiple GitHub repos can poll the same Jira project. Each repo runs its own pol
 
 ### Should each repo have its own poll workflow?
 
-Yes. Each repo should contain its own `.github/workflows/fullsend-poll-jira.yml`. The `--target-repo` flag passed to `fullsend poll` (defaulting to `${{ github.repository }}`) controls two things:
+Yes. Each repo should contain its own `.github/workflows/fullsend-poll-jira.yml`, which `repos install` writes for every repo whose `tracker.jira.poll.enabled` is `true`. The `--target-repo` flag passed to `fullsend poll` (defaulting to `${{ github.repository }}`) controls two things:
 
 1. **Entity property namespace.** Lock and checkpoint properties are keyed as `fullsend.poll.{owner}.{repo}.*`, so repos `acme/frontend` and `acme/backend` polling the same Jira project write to separate property keys on each issue and never interfere with each other.
 2. **GHA concurrency group.** The workflow's `concurrency.group` is scoped to the workflow file, which lives in the repo — so each repo's poll cycles queue independently.

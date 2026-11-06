@@ -494,13 +494,27 @@ flag or environment variable supplies them.
   every protected-branch job. The scaffolded poll and webhook dispatcher jobs
   clear both Jira variables before running other code. Only the Jira poller
   and agent jobs keep them.
-- **Forge resources.** The managed resources are the GitHub scheduled poll
-  workflow and the GitLab poll job and pipeline schedule. They are delivered
-  by forge-specific follow-up work
-  ([#9109](https://github.com/fullsend-ai/fullsend/issues/9109),
-  [#9108](https://github.com/fullsend-ai/fullsend/issues/9108)). Until a
-  forge's resources are managed, install still converges the credentials and
-  reports that this release does not manage the poll resources on that forge.
+- **GitHub poll workflow.** On GitHub the managed resource is the scheduled
+  caller `.github/workflows/fullsend-poll-jira.yml`. It runs every five
+  minutes and on manual dispatch. It calls Fullsend's `reusable-poll-jira.yml`
+  and hands the resulting dispatch matrix to `reusable-dispatch.yml`, both
+  pinned to the same ref as the rest of the scaffold. The poll job receives
+  `FULLSEND_JIRA_TOKEN`, and `FULLSEND_JIRA_EMAIL` only when that secret
+  exists. Install adds, updates, or removes the caller in the scaffold commit,
+  so `--direct` and pull-request delivery apply to it as they do to the shim.
+  When install manages the caller, it checks that its upstream ref contains
+  `reusable-poll-jira.yml`. An older pin fails with no credential or workflow
+  changes; upgrade the pin to a ref that includes the workflow.
+  Install changes the file only when it carries the
+  `# fullsend-component: jira-poll` marker line. A workflow at that path
+  without the marker, such as one copied from the Jira guide, is reported and
+  left untouched, and so are other workflow files. `repos uninstall` removes
+  the managed caller. See
+  [Scheduled workflow](../guides/user/jira-integration.md#scheduled-workflow).
+- **GitLab poll resources.** The GitLab poll job and pipeline schedule are
+  delivered by [#9108](https://github.com/fullsend-ai/fullsend/issues/9108).
+  Until then, install still converges the GitLab credentials and reports that
+  this release does not manage the poll resources there.
 - **Validation.** When polling is enabled, `tracker.jira.base_url` and
   `tracker.jira.project` must be set, or the repo fails before any write.
   Surrounding whitespace is trimmed from both flags. On GitLab the token must
@@ -511,7 +525,7 @@ flag or environment variable supplies them.
   `--jira-token` or `--jira-email` when no selected repo enables polling fails
   the run.
 - **Dry run.** `--dry-run` lists the Jira secrets that would be written, by
-  name only.
+  name only, and the poll workflow change it would make.
 - **Command-line only.** `--jira-token` and `--jira-email` are never written
   to `repos.yaml` and never logged.
 
@@ -1423,7 +1437,7 @@ Requires a GitHub token via `GH_TOKEN`, `GITHUB_TOKEN`, or `gh auth token`. For 
 
 Tear down fullsend from the specified repos and remove them from the manifest. By default, the command tears down first (opening a PR to remove workflow files, then deleting variables and secrets via the API), then removes successfully-torn-down repos from the manifest. Partial failures leave the manifest entry intact so the user can retry.
 
-File deletions (workflow YAML, `.fullsend/config.yaml`, and GitLab `.gitlab-ci.yml` unmerge) are delivered as a pull request unless `--direct` is set, matching `repos install`. Variable and secret deletions are API-only operations and always happen immediately. For GitLab repos, uninstall also deletes the `fullsend-poll-state-slash` and `fullsend-poll-state-events` branches (a missing branch is ignored so older installs still uninstall cleanly) after deleting the fullsend-owned webhook fast-path project webhook (hooks fullsend does not own are left untouched) and revoking its managed Poller-owned pipeline trigger token before any scaffold file is removed, and deleting the wildcard-scoped `FULLSEND_TRIGGER_TOKEN` and `FULLSEND_WEBHOOK_SECRET` variables (a failure there fails uninstall and leaves the manifest entry in place for retry). On the trigger-account route, `FULLSEND_TRIGGER_TOKEN` was already deleted during install and the webhook's trigger is revoked during the trigger-account removal described below. Uninstall also deletes the retired poll-state CI/CD variables, registry/rotation-state variables (`FULLSEND_GITLAB_POLLER_GENERATIONS` is deleted last, only after every Poller account it records was verified and deleted; uninstall retains it when cleanup is incomplete or ambiguous, so the quarantine and retirement obligations it records survive until an administrator has reconciled them), built-in and custom `FULLSEND_GITLAB_*_TOKEN` secrets, and the corresponding `fullsend-poller` / `fullsend-analyst` / `fullsend-coder` / `fullsend-role-*` project access tokens. Uninstall does **not** delete a leftover `FULLSEND_FORGE_TOKEN` secret or revoke a matching `fullsend-bot` project access token — a repository installed before the role-only rollout requires manual cleanup of those. Token revocation is part of uninstall success: if listing or revoking the role project access tokens fails, uninstall fails and the manifest entry is left in place for retry. Reinstall and converge do not revoke credentials that are already distributed. Before deleting anything, uninstall reads the rotation-state variable and fails closed, leaving every variable, secret, and token in place, if it is unreadable or malformed. The rotation-state variable is deleted last, after every other cleanup step succeeds; when it records administrator-supplied service-account exclusions, an exclusions-only document is retained so a later install or uninstall does not treat those accounts as fullsend-managed. When the rotation state records an administrator-supplied credential whose owner was never recorded and the CLI's token client cannot attribute it, uninstall does not guess: it leaves the supplied role's project access token and the whole rotation-state variable in place (reporting this in the cleanup diagnostics) and still removes everything else.
+File deletions (workflow YAML, `.fullsend/config.yaml`, and GitLab `.gitlab-ci.yml` unmerge) are delivered as a pull request unless `--direct` is set, matching `repos install`. On GitHub the workflow deletions include the managed Jira poll caller `.github/workflows/fullsend-poll-jira.yml` when it carries Fullsend's `# fullsend-component: jira-poll` marker; a workflow at that path without the marker is left untouched. Variable and secret deletions are API-only operations and always happen immediately. For GitLab repos, uninstall also deletes the `fullsend-poll-state-slash` and `fullsend-poll-state-events` branches (a missing branch is ignored so older installs still uninstall cleanly) after deleting the fullsend-owned webhook fast-path project webhook (hooks fullsend does not own are left untouched) and revoking its managed Poller-owned pipeline trigger token before any scaffold file is removed, and deleting the wildcard-scoped `FULLSEND_TRIGGER_TOKEN` and `FULLSEND_WEBHOOK_SECRET` variables (a failure there fails uninstall and leaves the manifest entry in place for retry). On the trigger-account route, `FULLSEND_TRIGGER_TOKEN` was already deleted during install and the webhook's trigger is revoked during the trigger-account removal described below. Uninstall also deletes the retired poll-state CI/CD variables, registry/rotation-state variables (`FULLSEND_GITLAB_POLLER_GENERATIONS` is deleted last, only after every Poller account it records was verified and deleted; uninstall retains it when cleanup is incomplete or ambiguous, so the quarantine and retirement obligations it records survive until an administrator has reconciled them), built-in and custom `FULLSEND_GITLAB_*_TOKEN` secrets, and the corresponding `fullsend-poller` / `fullsend-analyst` / `fullsend-coder` / `fullsend-role-*` project access tokens. Uninstall does **not** delete a leftover `FULLSEND_FORGE_TOKEN` secret or revoke a matching `fullsend-bot` project access token — a repository installed before the role-only rollout requires manual cleanup of those. Token revocation is part of uninstall success: if listing or revoking the role project access tokens fails, uninstall fails and the manifest entry is left in place for retry. Reinstall and converge do not revoke credentials that are already distributed. Before deleting anything, uninstall reads the rotation-state variable and fails closed, leaving every variable, secret, and token in place, if it is unreadable or malformed. The rotation-state variable is deleted last, after every other cleanup step succeeds; when it records administrator-supplied service-account exclusions, an exclusions-only document is retained so a later install or uninstall does not treat those accounts as fullsend-managed. When the rotation state records an administrator-supplied credential whose owner was never recorded and the CLI's token client cannot attribute it, uninstall does not guess: it leaves the supplied role's project access token and the whole rotation-state variable in place (reporting this in the cleanup diagnostics) and still removes everything else.
 
 GitLab uninstall holds the `FULLSEND_GITLAB_INSTALL_LEASE` project lease for the whole teardown, from webhook removal through the final variable, secret, branch, and token deletions, so no concurrent installer can publish a replacement hook, trigger token, or role credential mid-teardown. It fails closed: if another installer holds the lease or the client cannot take it, uninstall stops before removing anything and the manifest entry is left in place for retry. See [Upgrade compatibility](#upgrade-compatibility) for stranded-lease recovery.
 
